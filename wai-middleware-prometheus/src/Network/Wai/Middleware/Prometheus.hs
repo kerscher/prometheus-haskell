@@ -2,14 +2,16 @@
 -- metrics and for instrumenting WAI applications.
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-module Network.Wai.Middleware.Prometheus (
-    prometheus
-,   PrometheusSettings (..)
-,   Default.def
-,   instrumentApp
-,   instrumentIO
-,   metricsApp
-) where
+
+module Network.Wai.Middleware.Prometheus
+  ( prometheus
+  , PrometheusSettings(..)
+  , Default.def
+  , instrumentWithLabel
+  , instrumentApp
+  , instrumentIO
+  , metricsApp
+  ) where
 
 import qualified Data.ByteString.Builder as BS
 import qualified Data.ByteString.Char8 as BS
@@ -52,23 +54,35 @@ requestLatency = Prom.unsafeRegisterIO $ Prom.vector ("handler", "method", "stat
                                        $ Prom.histogram info Prom.defaultBuckets
     where info = Prom.Info "http_request_duration_seconds"
                            "The HTTP request latencies in seconds."
+-- | Instrument a WAI app using an user-provided labelling function.
+--
+-- If you use this function you will likely want to override the default value
+-- of 'prometheusInstrumentApp' to be false so that your app does not get double
+-- instrumented.
+instrumentWithLabel ::
+     (Wai.Request -> String) -- ^ Labelling function
+  -> Wai.Application -- ^ The app to instrument
+  -> Wai.Application -- ^ The instrumented app
+instrumentWithLabel f app req respond = do
+  start <- getTime Monotonic
+  app req $ \res -> do
+    end <- getTime Monotonic
+    let method = Just $ BS.unpack (Wai.requestMethod req)
+    let status = Just $ show (HTTP.statusCode (Wai.responseStatus res))
+    observeSeconds (f req) method status start end
+    respond res
 
 -- | Instrument a WAI app with the default WAI metrics.
 --
 -- If you use this function you will likely want to override the default value
 -- of 'prometheusInstrumentApp' to be false so that your app does not get double
 -- instrumented.
-instrumentApp :: String           -- ^ The label used to identify this app
-              -> Wai.Application  -- ^ The app to instrument
-              -> Wai.Application  -- ^ The instrumented app
-instrumentApp handler app req respond = do
-    start <- getTime Monotonic
-    app req $ \res -> do
-        end <- getTime Monotonic
-        let method = Just $ BS.unpack (Wai.requestMethod req)
-        let status = Just $ show (HTTP.statusCode (Wai.responseStatus res))
-        observeSeconds handler method status start end
-        respond res
+instrumentApp ::
+     String -- ^ The label used to identify this app
+  -> Wai.Application -- ^ The app to instrument
+  -> Wai.Application -- ^ The instrumented app
+instrumentApp handler app req respond =
+  instrumentWithLabel (const handler) app req respond
 
 -- | Instrument an IO action with timing metrics. This function can be used if
 -- you would like to get more fine grained metrics, for instance this can be
